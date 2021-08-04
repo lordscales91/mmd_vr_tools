@@ -1,0 +1,3 @@
+echo Launching python script...
+python3 "$1"/scripts/python/encode_video.py "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+# read -n 1 -s -r -p "Press any key to continue"
