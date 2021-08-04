@@ -1,0 +1,5 @@
+DO NOT CLOSE THIS WINDOW!!
+
+Explanation:
+This is a placeholder text file which is opened to move the MMD back in the windows stack without minimizing.
+It is required for WinMenuSelectItem to work (See: https://www.autohotkey.com/docs/commands/WinMenuSelectItem.htm#Remarks)
