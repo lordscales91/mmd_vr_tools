@@ -17,12 +17,14 @@ class JobData extends Preferences {
     static STATUS_PENDING := 1
     static STATUS_PROCESSING := 2
     static STATUS_COMPLETED := 9
+    static STATUS_ERROR := -1
 
     static VR_FORMAT_NONE := -1
     static VR_FORMAT_180DEG := 1
     static VR_FORMAT_360DEG := 2
 
     jobId:=""
+    jobShortId:=-1
     jobStatus:=1
     pmmFile:=""
     baseVideoName:=""
@@ -45,8 +47,10 @@ class TaskData {
     static STATUS_PREPARING := 2
     static STATUS_PROCESSING := 3
     static STATUS_COMPLETED := 9
+    static STATUS_ERROR := -1
 
     taskId:=""
+    taskShortId:=-1
     taskType:=0
     taskStatus:=1
     jobId:=""

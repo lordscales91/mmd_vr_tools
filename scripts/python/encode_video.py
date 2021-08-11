@@ -1,17 +1,21 @@
 
 import re
 import sys
+import ctypes
 import os
 from configparser import ConfigParser
 import openshot
 
 tools_dir = None
 user_prefs = None
+workdir_prefix = 'workDir'
+cli_id_tag = ''
 
 if getattr(sys, 'frozen', False):
     # It's a frozen executable, use the executable path to
     # determine the tools dir
     tools_dir = os.path.abspath(os.path.dirname(os.path.realpath(sys.executable)) + '/..')
+    workdir_prefix = ''
 else:
     tools_dir = os.path.abspath(os.path.dirname(os.path.realpath(__file__)) + '/../..')
 
@@ -34,12 +38,12 @@ def vr_encode_side(job_data, task_data):
     sides_per_eye = job_data.getint('General', 'sidesPerEye', fallback=5)
     eye = task_data.get('General', 'side', fallback='L')
     base_video_name = job_data.get('General', 'baseVideoName', fallback='My video')
-    staging_folder = tools_dir + "/staging/" + job_data['General']['jobId']
+    staging_folder = os.path.join(tools_dir, workdir_prefix, 'staging', job_data['General']['jobId'])
     out_prefix = eye + '_encoded_'
     vr_format = job_data.getint('General', 'VRFormat', fallback=VR_FORMAT_180DEG)
     original_frame_diff = original_frame_range[1] - original_frame_range[0]
-    original_frame_count = (original_frame_diff + 1) * (fps // 30)
-    adjusted_frame_range = [original_frame_range[0] + 1, original_frame_range[0] + original_frame_count]
+    original_frame_count = original_frame_diff * (fps // 30) + 1
+    adjusted_frame_range = [original_frame_range[0] * (fps // 30) + 1, original_frame_range[1] * (fps // 30) + 1]
     target_bitrate = 15000000
     encode_audio = (eye == 'L')
 
@@ -237,7 +241,9 @@ def vr_encode_side(job_data, task_data):
         encoded_frames += 1
         if (encoded_frames == 1 or encoded_frames % 10 == 0):
             print()
-            print("Encoded {:d} of {:d} frames".format(encoded_frames, original_frame_count))
+            progress_info = "Encoded {:d} of {:d} frames".format(encoded_frames, original_frame_count)
+            print(progress_info)
+            change_cli_title(progress_info)
 
     w.Close()
     t.Close()
@@ -269,8 +275,8 @@ def vr_encode_final(job_data):
     base_video_name = job_data.get('General', 'baseVideoName', fallback='My video')
     vr_format = job_data.getint('General', 'VRFormat', fallback=VR_FORMAT_180DEG)
     original_frame_diff = original_frame_range[1] - original_frame_range[0]
-    original_frame_count = (original_frame_diff + 1) * (fps // 30)
-    adjusted_frame_range = [original_frame_range[0] + 1, original_frame_range[0] + original_frame_count]
+    original_frame_count = original_frame_diff * (fps // 30) + 1
+    adjusted_frame_range = [original_frame_range[0] * (fps // 30) + 1, original_frame_range[1] * (fps // 30) + 1]
     target_bitrate = 15000000
     if vr_format == VR_FORMAT_180DEG:
         # Left-right layout for 180 deg
@@ -278,7 +284,7 @@ def vr_encode_final(job_data):
     else:
         # Top-bottom layout for 360 deg
         resolution = [resolution_per_eye[0], resolution_per_eye[1] * 2]
-    staging_folder = tools_dir + "/staging/" + job_data['General']['jobId']
+    staging_folder = os.path.join(tools_dir, workdir_prefix, 'staging', job_data['General']['jobId'])
     out_folder = determine_output_dir(job_data)
     if not os.path.isdir(out_folder):
         os.makedirs(out_folder)
@@ -334,16 +340,18 @@ def vr_encode_final(job_data):
         w.WriteFrame(f)
         encoded_frames += 1
         if (encoded_frames == 1 or encoded_frames % 10 == 0):
-            print("Encoded {:d} of {:d} frames".format(encoded_frames, original_frame_count))
+            progress_info = "Encoded {:d} of {:d} frames".format(encoded_frames, original_frame_count)
+            print(progress_info)
+            change_cli_title(progress_info)
     w.Close()
     t.Close()
     print('Encoding finished')
 
 def determine_output_dir(job_data):
-    out_dir = job_data.get('General', 'finalVideoOutDir', fallback=None)
-    if out_dir is None and user_prefs is not None:
-        out_dir = user_prefs.get('Encoding', 'finalVideoOutDir', fallback=None)
-    if out_dir is None:
+    out_dir = job_data.get('General', 'finalVideoOutDir', fallback='')
+    if len(out_dir) == 0 and user_prefs is not None:
+        out_dir = user_prefs.get('Encoding', 'finalVideoOutDir', fallback='')
+    if len(out_dir) == 0:
         out_dir = os.path.join(tools_dir, 'out')
     return out_dir
 
@@ -360,10 +368,18 @@ def update_task_status(task_data, out_file, new_status=9):
     with open(out_file, 'wt', encoding='utf-16') as fp:
         task_data.write(fp, False)
 
+def change_cli_title(new_title:str):
+    if getattr(sys, 'frozen', False):
+        ctypes.windll.kernel32.SetConsoleTitleW(new_title + ' ' + cli_id_tag)
+    else:
+        sys.stdout.write("\x1b]2;{:s}\x07".format(new_title + ' ' + cli_id_tag))
+
 if getattr(sys, 'frozen', False) or __name__ == '__main__':
     print("tools dir is: " + tools_dir)
-    task_file_name = sys.argv[1]
-    task_file = tools_dir + "/jobs/tasks/" + task_file_name + ".ini"
+    job_file_name = sys.argv[1] 
+    task_file_name = sys.argv[2]
+    job_file = os.path.join(tools_dir, workdir_prefix, 'jobs', job_file_name, 'main.ini')
+    task_file = os.path.join(tools_dir, workdir_prefix, 'jobs', job_file_name, task_file_name + ".ini")
     print("the task file name should be: " + task_file)
     task_data = None
     job_data = None
@@ -378,7 +394,6 @@ if getattr(sys, 'frozen', False) or __name__ == '__main__':
         task_data.read(task_file, 'utf-16')
 
     if task_data is not None:
-        job_file = tools_dir + "/jobs/" + task_data['General']['jobId'] + ".ini"
         if os.path.isfile(job_file):
             print('Job file found')
             job_data = ConfigParser()
@@ -387,10 +402,19 @@ if getattr(sys, 'frozen', False) or __name__ == '__main__':
 
     if job_data is not None:
         print('Job and task data successfully parsed')
-        if(job_data.getint('General', 'VRFormat', fallback=VR_FORMAT_180DEG) != VR_FORMAT_NONE):
-            if(task_data.get('General', 'side', fallback='L')) == 'F':
-                vr_encode_final(job_data)
-            else:
-                vr_encode_side(job_data, task_data)
-        
-        update_task_status(task_data, task_file)
+        job_short_id = job_data.get('General', 'jobShortId', fallback="000")
+        task_short_id = task_data.get('General', 'taskShortId', fallback="000")
+        id_sep = ':'
+        cli_id_tag = "[{:s}{:s}{:s}]".format(job_short_id, id_sep, task_short_id)
+        change_cli_title("Encoding...")
+        try:
+            if(job_data.getint('General', 'VRFormat', fallback=VR_FORMAT_180DEG) != VR_FORMAT_NONE):
+                if(task_data.get('General', 'side', fallback='L')) == 'F':
+                    vr_encode_final(job_data)
+                else:
+                    vr_encode_side(job_data, task_data)
+            update_task_status(task_data, task_file)
+        except Exception as e:
+            print(type(e).__name__ + ': ' + str(e))
+            update_task_status(task_data, task_file, -1)
+            sys.exit(1)

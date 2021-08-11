@@ -46,3 +46,10 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# Folders for testing stuff
+test
+experimenting
+
+# Local preferences
+preferences.ini
