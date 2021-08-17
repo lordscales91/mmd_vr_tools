@@ -42,6 +42,8 @@ class JobData extends Preferences {
 class TaskData {
     static T_RENDERING := 1
     static T_ENCODING := 2
+    static T_INJECT_METADATA := 3
+    static T_UPLOAD := 4
 
     static STATUS_PENDING := 1
     static STATUS_PREPARING := 2
@@ -53,6 +55,7 @@ class TaskData {
     taskShortId:=-1
     taskType:=0
     taskStatus:=1
+    taskResult:=""
     jobId:=""
     side:=""
     dependsOn:=""

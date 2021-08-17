@@ -1,7 +1,3 @@
-#SingleInstance, Force
-SendMode Input
-SetWorkingDir, %A_ScriptDir%
-
 ; Setting the compiler directives to customize the EXE properties.
 
 ;@Ahk2Exe-SetCompanyName Lordscales91
@@ -9,6 +5,16 @@ SetWorkingDir, %A_ScriptDir%
 ;@Ahk2Exe-SetDescription Camera Motion to VR
 ;@Ahk2Exe-SetVersion 0.0.1-beta
 ;@Ahk2Exe-SetName MMD VR Motion Converter
+
+#SingleInstance, Force
+SendMode Input
+SetWorkingDir, %A_ScriptDir%
+
+global WORKDIR_PREFIX := "workDir\"
+
+if (A_IsCompiled) {
+    WORKDIR_PREFIX := ""
+}
 
 ; For now this is just a small wrapper around the Python script, eventually this could have a GUI
 ; to schedule several conversions to be executed in batch.
@@ -44,7 +50,7 @@ LaunchConverter(vmdFile) {
         Run % "C:\msys64\usr\bin\mintty.exe /bin/env MSYSTEM=MINGW64 /bin/bash -l """ toolsDirBash "/scripts/bash/python_launcher.sh"" " pythonScript " '" vmdFileBash "' " jobId
     }
     ; Wait for it to finish
-    expectedFile := A_WorkingDir . "\status\completed\" . jobId . ".main"
+    expectedFile := A_WorkingDir . "\" . WORKDIR_PREFIX . "status\completed\" . jobId . ".main"
     while(!FileExist(expectedFile)) {
         Sleep, 200
     }

@@ -320,7 +320,8 @@ def vr_encode_final(job_data):
     t.AddClip(rc)
     print('Clips added')
 
-    w = openshot.FFmpegWriter(get_safe_filename(out_folder, base_video_name))
+    out_file = get_safe_filename(out_folder, base_video_name)
+    w = openshot.FFmpegWriter(out_file)
     w.SetAudioOptions(True, "aac", t.info.sample_rate, t.info.channels, t.info.channel_layout, 192000)
     w.SetVideoOptions(True, "libx264", openshot.Fraction(fps, 1), resolution[0], resolution[1],
                   openshot.Fraction(1, 1), False, False, target_bitrate)
@@ -346,6 +347,7 @@ def vr_encode_final(job_data):
     w.Close()
     t.Close()
     print('Encoding finished')
+    return out_file
 
 def determine_output_dir(job_data):
     out_dir = job_data.get('General', 'finalVideoOutDir', fallback='')
@@ -363,8 +365,9 @@ def get_safe_filename(directory, base_name, ext='.mp4'):
         i += 1
     return fname
 
-def update_task_status(task_data, out_file, new_status=9):
+def update_task_status(task_data, out_file, new_status=9, task_result=''):
     task_data.set('General', 'taskStatus', str(new_status))
+    task_data.set('General', 'taskResult', task_result)
     with open(out_file, 'wt', encoding='utf-16') as fp:
         task_data.write(fp, False)
 
@@ -408,13 +411,14 @@ if getattr(sys, 'frozen', False) or __name__ == '__main__':
         cli_id_tag = "[{:s}{:s}{:s}]".format(job_short_id, id_sep, task_short_id)
         change_cli_title("Encoding...")
         try:
+            task_result = ''
             if(job_data.getint('General', 'VRFormat', fallback=VR_FORMAT_180DEG) != VR_FORMAT_NONE):
                 if(task_data.get('General', 'side', fallback='L')) == 'F':
-                    vr_encode_final(job_data)
+                    task_result = vr_encode_final(job_data)
                 else:
                     vr_encode_side(job_data, task_data)
-            update_task_status(task_data, task_file)
+            update_task_status(task_data, task_file, task_result=task_result)
         except Exception as e:
             print(type(e).__name__ + ': ' + str(e))
-            update_task_status(task_data, task_file, -1)
+            update_task_status(task_data, task_file, -1, str(e))
             sys.exit(1)

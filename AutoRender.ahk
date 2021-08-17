@@ -274,6 +274,7 @@ ReadTaskData(pJobId, taskNames) {
             IniRead, taskShortId, %taskIniFile%, General, taskShortId
             IniRead, taskType, %taskIniFile%, General, taskType
             IniRead, taskStatus, %taskIniFile%, General, taskStatus
+            IniRead, taskResult, %taskIniFile%, General, taskResult, %A_Space%
             IniRead, side, %taskIniFile%, General, side
             IniRead, dependsOnStr, %taskIniFile%, General, dependsOn, %A_Space%
             task := new TaskData
@@ -281,6 +282,7 @@ ReadTaskData(pJobId, taskNames) {
             task.taskShortId := taskShortId
             task.taskType := taskType
             task.taskStatus := taskStatus
+            task.taskResult := taskResult
             task.jobId := pJobId
             task.side := side
             task.dependsOn := StrSplit(dependsOnStr, ",")
@@ -311,6 +313,7 @@ WriteTaskData(task) {
             IniWrite % task.taskId, %taskIniFile%, General, taskId
             IniWrite % task.taskType, %taskIniFile%, General, taskType
             IniWrite % task.taskStatus, %taskIniFile%, General, taskStatus
+            IniWrite % task.taskResult, %taskIniFile%, General, taskResult
             IniWrite % task.jobId, %taskIniFile%, General, jobId
             IniWrite % task.side, %taskIniFile%, General, side
             if (IsObject(task.dependsOn) && task.dependsOn.Length() > 0) {
@@ -333,27 +336,45 @@ WriteTaskData(task) {
 }
 
 UpdateJobStatus(ByRef job, newStatus) {
-    oldStatusFile := DetermineJobStatusFilePath(job.jobId, job.jobStatus)
-    newStatusFile := DetermineJobStatusFilePath(job.jobId, newStatus)
-    if(InStr(FileExist(oldStatusFile), "A")) {
-        ; Move file
-        FileMove, %oldStatusFile%, %newStatusFile%
-    } else {
-        FileAppend,, %newStatusFile%
+    success := true
+    action := "created"
+    try {
+        oldStatusFile := DetermineJobStatusFilePath(job.jobId, job.jobStatus)
+        newStatusFile := DetermineJobStatusFilePath(job.jobId, newStatus)
+        if(InStr(FileExist(oldStatusFile), "A")) {
+            ; Move file
+            action := "updated"
+            FileMove, %oldStatusFile%, %newStatusFile%
+        } else {
+            FileAppend,, %newStatusFile%
+        }
+        job.jobStatus := newStatus
+        IniWrite % job.jobStatus, % WORKDIR_PREFIX "jobs\" job.jobId "\main.ini", General, jobStatus
+    } catch {
+        success := false
+        TrayTip % "Warning", % "Job status file couldn't be " action, 1, 2
     }
-    job.jobStatus := newStatus
-    IniWrite % job.jobStatus, % WORKDIR_PREFIX "jobs\" job.jobId "\main.ini", General, jobStatus
+    Return success
 }
 
 UpdateTaskStatus(ByRef task, newStatus) {
-    IniWrite % newStatus, % WORKDIR_PREFIX "jobs\" task.jobId "\" task.taskId ".ini", General, taskStatus
-    task.taskStatus := newStatus
+    success := true
+    try {
+        IniWrite % newStatus, % WORKDIR_PREFIX "jobs\" task.jobId "\" task.taskId ".ini", General, taskStatus
+        task.taskStatus := newStatus
+    } catch {
+        success := false
+        TrayTip % "Warning", % "Couldn't update the task status", 1, 2
+    }
+    Return success
 }
 
 PullTaskStatus(ByRef task) {
 
     IniRead, taskStatus, % WORKDIR_PREFIX "jobs\" task.jobId "\" task.taskId ".ini", General, taskStatus
+    IniRead, taskResult, % WORKDIR_PREFIX "jobs\" task.jobId "\" task.taskId ".ini", General, taskResult, %A_Space%
     task.taskStatus := taskStatus
+    task.taskResult := taskResult
 }
 
 DetermineJobStatusFilePath(jobId, jobStatus) {
@@ -473,6 +494,16 @@ InitializeTasks(ByRef job) {
         tasks.Push(task)
         taskCounter++
     }
+    Random, rand1
+    injectTask := new TaskData
+    injectTask.jobId := job.jobId
+    injectTask.taskShortId := Format("{:08x}", rand1)
+    injectTask.taskId := Format("{:05d}", taskCounter) . "_inject_metadata"
+    injectTask.taskType := TaskData.T_INJECT_METADATA
+    injectTask.taskStatus := TaskData.STATUS_PENDING
+    tasks.Push(injectTask)
+    taskCounter++
+
     job.tasks := tasks
 }
 
@@ -501,6 +532,7 @@ StartVR180Rendering(mmdWin, job) {
     preferredCodecs.Push("MJPEG", "ffdshow video encoder")
     encodingOptions := {startFrame: job.recordingFrames[1], endFrame: job.recordingFrames[2], enableAudio: true, fps: 60
                     , preferredCodecs: preferredCodecs}
+    finalEncodedVideoPath := ""
     for i, task in job.tasks {
         shouldProcess := (task.taskStatus != TaskData.STATUS_COMPLETED)?1:0
 
@@ -510,7 +542,7 @@ StartVR180Rendering(mmdWin, job) {
             prefix := eye . side . "_"
             videoFilepath := fullPathStaging . "\" . prefix . videoName . ".avi"
             if (FileExist(videoFilepath)) {
-                ; If a previous file with the same file exists it means it's from a previous failed attempt.
+                ; If a previous file with the same name exists it means it's from a previous failed attempt.
                 ; Get rid of it before starting the process
                 FileDelete, %videoFilepath%
             }
@@ -535,6 +567,17 @@ StartVR180Rendering(mmdWin, job) {
                 FileDelete, %expectedFilename%
             }
             success := StartEncodingTask(job, task)
+            if(!success) {
+                Break
+            }
+        }
+        if(task.taskType == TaskData.T_ENCODING && task.side == "F") {
+            if(task.taskStatus == TaskData.STATUS_COMPLETED) {
+                finalEncodedVideoPath := task.taskResult
+            }
+        }
+        if(shouldProcess && task.taskType == TaskData.T_INJECT_METADATA && finalEncodedVideoPath) {
+            success := StartInjectMetadataTask(job, task, finalEncodedVideoPath)
             if(!success) {
                 Break
             }
@@ -658,7 +701,11 @@ RenderVideo(mmdWin, videoName, directory, encodingOptions) {
                 if(renderEllapsed > timeBeforeCheckHung) {
                     ; After 30 minutes start checking if the MMD Render froze
                     ; If it froze give it some time and if it's still frozen. Kill it
-                    ; Note: not sure if this is a good idea, the AHK script might hung too while trying to kill the hung MMD
+                    isHung := IsHungWindow(recWindowId)
+                    if(IsHung == 0) {
+                        ; It has recovered within the period of grace. Keep it going
+                        hungStart := -1
+                    }
                     if(hungStart != -1) {
                         hungEllapsed := hungStart - A_TickCount
                         if(hungEllapsed > periodOfGrace) {
@@ -667,23 +714,12 @@ RenderVideo(mmdWin, videoName, directory, encodingOptions) {
                             ExitApp, 1
                         }
                     }else {
-                        isHung := IsHungWindow(recWindowId)
                         if(IsHung == 1) {
                             hungStart := A_TickCount
-                        } else if(IsHung == 0) {
-                            ; It has recovered within the period of grace. Keep it going
-                            hungStart := -1
                         }
                     }
                 }
                 Sleep, 100    
-            }
-            ; TrayTip, % "Debug", % "RenderVideo " videoName " after while", 1, 1
-            if(WinExist("ahk_class RecWindow ahk_pid " mmdPid)) {
-                success := false
-                TrayTip, % "Problem rendering", % "Rendering of video " videoName " is taking too long", 3, 3
-            } else {
-                ; TrayTip, % "Rendering finished", % "Rendering " videoName "...", 3, 1
             }
         }
     } catch {
@@ -774,7 +810,7 @@ SetVRCameraParams(mmdWin, videoName, rotX, rotY, accRx, accRy, angle := 92) {
     Return success
 }
 
-StartEncodingTask(job, task) {
+StartEncodingTask(job, ByRef task) {
     success := true
     try {
         scriptPid := 0
@@ -811,6 +847,11 @@ StartEncodingTask(job, task) {
             encodingEllapsed := A_TickCount - encodingStarted
             if (encodingEllapsed > timeBeforeCheckHung && scriptWin) {
                 ; After 15 minutes start checking if the process froze
+                isHung := IsHungWindow(scriptWin)
+                if(IsHung == 0) {
+                    ; It has recovered within the period of grace. Keep it going
+                    hungStart := -1
+                }
                 if(hungStart != -1) {
                     hungEllapsed := hungStart - A_TickCount
                     if(hungEllapsed > periodOfGrace) {
@@ -819,12 +860,8 @@ StartEncodingTask(job, task) {
                         ExitApp, 1
                     }
                 } else {
-                    isHung := IsHungWindow(scriptWin)
                     if(IsHung == 1) {
                         hungStart := A_TickCount
-                    } else if(IsHung == 0) {
-                        ; It has recovered within the period of grace. Keep it going
-                        hungStart := -1
                     }
                 }
             }
@@ -838,6 +875,76 @@ StartEncodingTask(job, task) {
     } catch {
         success := false
         TrayTip % "Error", % "Unknown error during encoding", 2, 3
+    }
+    Return success
+}
+
+StartInjectMetadataTask(ByRef job, ByRef task, videoFile) {
+    success := true
+    try {
+        scriptPid := 0
+        scriptWin := 0
+        taskStarted := -1
+        if (A_IsCompiled) {
+            ; For the compiled exe we can get the PID directly from the Run command
+            Run % A_WorkingDir . "\scripts\inject_metadata.exe " task.jobId " " task.taskId " """ videoFile """",,, scriptPid
+            WinWait, ahk_pid %scriptPid%,, 10
+            taskStarted := A_TickCount
+            WinGet, scriptWin, ID, ahk_pid %scriptPid%
+        } else {
+            toolsDir := A_WorkingDir
+            toolsDirClean := StrReplace(toolsDir, ":")
+            toolsDirBash := "/" . StrReplace(toolsDirClean, "\", "/")
+            pythonScript := toolsDirBash . "/scripts/python/inject_metadata.py"
+            Run % "C:\msys64\usr\bin\mintty.exe /bin/env MSYSTEM=MINGW64 /bin/bash -l """ toolsDirBash "/scripts/bash/python_launcher.sh"" " pythonScript " "  task.jobId " " task.taskId " '" videoFile "'"
+            ; When running the script in MinGW we need to lookup the cli window using a tag
+            exeLookup := "mintty.exe"
+            idSep := ":"
+            idTag := "[" . job.jobShortId . idSep . task.taskShortId . "]"
+            WinWait, %idTag% ahk_exe %exeLookup%,, 10
+            taskStarted := A_TickCount
+            WinGet, scriptPid, PID, %idTag% ahk_exe %exeLookup%
+            WinGet, scriptWin, ID, ahk_pid %scriptPid%
+        }
+
+        timeBeforeCheckHung := 10 * 60 * 1000 ; 10 minutes in millis
+        periodOfGrace := 5 * 60 * 1000 ; 5 minute
+        hungStart := -1
+        ; Wait for the script to finish
+        oldStatus := task.taskStatus
+        while (oldStatus == task.taskStatus) {
+            taskEllapsed := A_TickCount - taskStarted
+            if (taskEllapsed > timeBeforeCheckHung && scriptWin) {
+                ; After 15 minutes start checking if the process froze
+                isHung := IsHungWindow(scriptWin)
+                if(IsHung == 0) {
+                    ; It has recovered within the period of grace. Keep it going
+                    hungStart := -1
+                }
+                if(hungStart != -1) {
+                    hungEllapsed := hungStart - A_TickCount
+                    if(hungEllapsed > periodOfGrace) {
+                        Process, Close, %scriptPid%
+                        MsgBox, 0x10, % "Error", % "The encoding script froze and had to be killed"
+                        ExitApp, 1
+                    }
+                } else {
+                    if(IsHung == 1) {
+                        hungStart := A_TickCount
+                    }
+                }
+            }
+            PullTaskStatus(task)
+            Sleep, 100
+        }
+
+        if(task.taskStatus == TaskData.STATUS_ERROR) {
+            success := false
+            TrayTip % "Error", % "Encoding task finished with errors", 2, 3
+        }
+    } catch {
+        success := false
+        TrayTip % "Error", % "Unknown error while injecting the metadata", 2, 3
     }
     Return success
 }
@@ -893,12 +1000,14 @@ ExtractStartEndFrames(mmdWin, ByRef startFrame, ByRef endFrame) {
         ControlSend, Edit1, {Enter}, ahk_id %mmdWin%
     } catch {
         errorThrown := true
-        TrayTip % "Attention", % "Problem extracting start-end frames, defaulting to 0-300", 2, 2
+        TrayTip % "Warning", % "Problem extracting start-end frames, defaulting to 0-300", 2, 2
         startFrame := 0
         endFrame := 300
     }
     if(!success && !errorThrown) {
-        TrayTip % "Attention", % "Unknown problem extracting start-end frames", 2, 2
+        TrayTip % "Warning", % "Unknown problem extracting start-end frames, defaulting to 0-300", 2, 2
+        startFrame := 0
+        endFrame := 300
     }
     Return success
 }

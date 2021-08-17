@@ -9,11 +9,13 @@ from mmd_tools.geom.core import Matrix
 
 tools_dir = None
 user_prefs = None
+workdir_prefix = 'workDir'
 
 if getattr(sys, 'frozen', False):
     # It's a frozen executable, use the executable path to
     # determine the tools dir
     tools_dir = os.path.abspath(os.path.dirname(os.path.realpath(sys.executable)) + '/..')
+    workdir_prefix = ''
 else:
     tools_dir = os.path.abspath(os.path.dirname(os.path.realpath(__file__)) + '/../..')
 
@@ -56,7 +58,7 @@ def convert_camera_motion(motion: vmd.File, jobId:str = None, convert_interp:boo
         dist = camFrame.distance
         if apply_camera_dist_offset:
             sign = -1
-            if dist > 0:
+            if dist >= 0:
                 sign = 1
             dist = (abs(dist) / 3 + 4) * sign
             # dist = (math.tan(math.radians(camFrame.angle / 2) * abs(dist)) + 4) * sign
@@ -77,7 +79,7 @@ def convert_camera_motion(motion: vmd.File, jobId:str = None, convert_interp:boo
     converted.save(filepath=out_filepath)
     print('Saved successfully to: {:s}'.format(out_filepath))
     if jobId is not None:
-        status_dir = os.path.join(tools_dir, 'status', 'completed')
+        status_dir = os.path.join(tools_dir, workdir_prefix, 'status', 'completed')
         if not os.path.exists(status_dir):
             os.makedirs(status_dir)
         status_file = os.path.join(status_dir, jobId+'.main')

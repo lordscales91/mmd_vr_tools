@@ -53,3 +53,6 @@ experimenting
 
 # Local preferences
 preferences.ini
+
+# Local working directory for generated files
+workDir/
