@@ -48,11 +48,16 @@ dmypy.json
 cython_debug/
 
 # Folders for testing stuff
-test
-experimenting
+test/
+experimenting/
 
 # Local preferences
 preferences.ini
 
 # Local working directory for generated files
 workDir/
+
+# Ignore config files except the samples
+config/*
+!config/*_sample*
+
