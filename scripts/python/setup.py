@@ -10,5 +10,5 @@ setup(
     version="0.0.1-beta",
     options={"build_exe": build_exe_options},
     executables=[Executable(os.path.join(basedir, "encode_video.py")), Executable(os.path.join(basedir, "camera_converter.py")), 
-                Executable(os.path.join(basedir, "inject_metadata.py"))]
+                Executable(os.path.join(basedir, "inject_metadata.py")), Executable(os.path.join(basedir, "upload_video.py"))]
 )

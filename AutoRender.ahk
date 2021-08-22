@@ -3,7 +3,7 @@
 ;@Ahk2Exe-SetCompanyName Lordscales91
 ;@Ahk2Exe-SetCopyright Copyright(c) 2021
 ;@Ahk2Exe-SetDescription MMD VR AutoRender
-;@Ahk2Exe-SetVersion 0.0.2-beta
+;@Ahk2Exe-SetVersion 0.1.0-beta
 ;@Ahk2Exe-SetName MMD VR AutoRender
 
 #Include DataModel.ahk
@@ -23,6 +23,10 @@ global VR_SIDE_FRONT = "F"
 
 global EYE_LEFT := "L"
 global EYE_RIGHT := "R"
+
+global FILETYPE_RENDER = 1
+global FILETYPE_ENCODED = 2
+global FILETYPE_FOLDER = 3
 
 global FATAL_ERROR := "FatalError"
 global WORKDIR_PREFIX := "workDir\"
@@ -467,6 +471,7 @@ InitializeTasks(ByRef job) {
     sides := [VR_SIDE_LEFT, VR_SIDE_RIGHT, VR_SIDE_TOP, VR_SIDE_BOTTOM, VR_SIDE_FRONT]
     taskCounter := 1
     tasks := []
+    ; First render and encode the left eye, then the right one
     for i, eye in eyes {
         for j, side in sides {
             Random, rand1
@@ -480,9 +485,6 @@ InitializeTasks(ByRef job) {
             tasks.Push(task)
             taskCounter++
         }
-    }
-    encodingSides := [EYE_LEFT, EYE_RIGHT, "F"]
-    for i, encSide in encodingSides {
         Random, rand1
         task := new TaskData
         task.jobId := job.jobId
@@ -490,10 +492,23 @@ InitializeTasks(ByRef job) {
         task.taskId := Format("{:05d}", taskCounter) . "_encoding"
         task.taskType := TaskData.T_ENCODING
         task.taskStatus := TaskData.STATUS_PENDING
-        task.side := encSide
+        task.side := eye
         tasks.Push(task)
         taskCounter++
     }
+    
+    ; Now we only need the final encoding (merging the left and right videos), inject the metadata and upload it
+    Random, rand1
+    task := new TaskData
+    task.jobId := job.jobId
+    task.taskShortId := Format("{:08x}", rand1)
+    task.taskId := Format("{:05d}", taskCounter) . "_encoding"
+    task.taskType := TaskData.T_ENCODING
+    task.taskStatus := TaskData.STATUS_PENDING
+    task.side := "F"
+    tasks.Push(task)
+    taskCounter++
+    
     Random, rand1
     injectTask := new TaskData
     injectTask.jobId := job.jobId
@@ -504,6 +519,18 @@ InitializeTasks(ByRef job) {
     tasks.Push(injectTask)
     taskCounter++
 
+    ; Add an uploading task if there are API credentials
+    if(FileExist("config\youtube_oauth.ini")) {
+        Random, rand1
+        injectTask := new TaskData
+        injectTask.jobId := job.jobId
+        injectTask.taskShortId := Format("{:08x}", rand1)
+        injectTask.taskId := Format("{:05d}", taskCounter) . "_upload"
+        injectTask.taskType := TaskData.T_UPLOAD
+        injectTask.taskStatus := TaskData.STATUS_PENDING
+        tasks.Push(injectTask)
+        taskCounter++
+    }
     job.tasks := tasks
 }
 
@@ -533,9 +560,12 @@ StartVR180Rendering(mmdWin, job) {
     encodingOptions := {startFrame: job.recordingFrames[1], endFrame: job.recordingFrames[2], enableAudio: true, fps: 60
                     , preferredCodecs: preferredCodecs}
     finalEncodedVideoPath := ""
+    injectedVideoPath := ""
     for i, task in job.tasks {
         shouldProcess := (task.taskStatus != TaskData.STATUS_COMPLETED)?1:0
-
+        if(i > 1) {
+            encodingOptions.enableAudio := false
+        }
         if(shouldProcess && task.taskType == TaskData.T_RENDERING) {
             eye := SubStr(task.side, 1, 1)
             side := SubStr(task.side, 2, 1)
@@ -570,17 +600,28 @@ StartVR180Rendering(mmdWin, job) {
             if(!success) {
                 Break
             }
-        }
-        if(task.taskType == TaskData.T_ENCODING && task.side == "F") {
-            if(task.taskStatus == TaskData.STATUS_COMPLETED) {
-                finalEncodedVideoPath := task.taskResult
+            ; Cleanup the renders as soon as they are merged, if enabled
+            if(side != "F" && userPrefs.deleteStagingFiles) {
+                CleanupStagingFiles(job, fullPathStaging, FILETYPE_RENDER, side)
+            } else if(side == "F" && userPrefs.deleteStagingFiles) {
+                CleanupStagingFiles(job, fullPathStaging, FILETYPE_ENCODED, "L")
+                CleanupStagingFiles(job, fullPathStaging, FILETYPE_ENCODED, "R")
             }
+        }
+        if(task.taskType == TaskData.T_ENCODING && task.side == "F" && task.taskStatus == TaskData.STATUS_COMPLETED) {
+            finalEncodedVideoPath := task.taskResult
         }
         if(shouldProcess && task.taskType == TaskData.T_INJECT_METADATA && finalEncodedVideoPath) {
             success := StartInjectMetadataTask(job, task, finalEncodedVideoPath)
             if(!success) {
                 Break
             }
+        }
+        if(task.taskType == TaskData.T_INJECT_METADATA && task.taskStatus == TaskData.STATUS_COMPLETED) {
+            injectedVideoPath := task.taskResult
+        }
+        if(shouldProcess && task.taskType == TaskData.T_UPLOAD && injectedVideoPath) {
+            StartUploadingTask(job, task, injectedVideoPath)
         }
     }
     
@@ -605,7 +646,7 @@ RenderVideo(mmdWin, videoName, directory, encodingOptions) {
         ; Just to be sure the WinMenuSelectItem works, activate the MMD window first
         ; this way we ensure it is in a "non-minimized" state. See: https://www.autohotkey.com/docs/commands/WinMenuSelectItem.htm
         WinActivate, ahk_id %mmdWin%
-        WinWaitActive, ahk_id %mmdWin%,, 5
+        WinWaitActive, ahk_id %mmdWin%,, 120
         if (ErrorLevel) {
             success := false
         }
@@ -613,7 +654,7 @@ RenderVideo(mmdWin, videoName, directory, encodingOptions) {
         if(success) {
             ; Activate another window before selecting the menu item
             Run % "notepad.exe data\placeholder.txt",,, txtPid
-            WinWait, ahk_pid %txtPid%,, 5
+            WinWait, ahk_pid %txtPid%,, 120
             if (ErrorLevel) {
                 success := false
             }
@@ -621,14 +662,14 @@ RenderVideo(mmdWin, videoName, directory, encodingOptions) {
         
         if(success) {
             WinActivate, ahk_pid %txtPid%
-            WinWaitActive, ahk_pid %txtPid%,, 5
+            WinWaitActive, ahk_pid %txtPid%,, 120
             if (ErrorLevel) {
                 success := false
             }
         }
         if (success) {
             WinMenuSelectItem, ahk_id %mmdWin%,, file, render to AVI
-            WinWait, output AVI ahk_pid %mmdPid%,, 5
+            WinWait, output AVI ahk_pid %mmdPid%,, 120
             WinGet, dialogId, ID
             if (ErrorLevel) {
                 success := false
@@ -639,7 +680,7 @@ RenderVideo(mmdWin, videoName, directory, encodingOptions) {
             ControlSetText, Edit1, %directory%\%videoName%, ahk_id %dialogId%
             ; ControlClick, Button2, ahk_id %dialogId%
             ClickWithDelayChange("Button2", "ahk_id " dialogId)
-            WinWait, AVI ahk_pid %mmdPid%,, 5
+            WinWait, AVI ahk_pid %mmdPid%,, 120
             WinGet, dialogId, ID
             if (ErrorLevel) {
                 success := false
@@ -672,7 +713,7 @@ RenderVideo(mmdWin, videoName, directory, encodingOptions) {
                 TrayTip, % "Couldn't find a preferred codec", % "No preferred codec was found to render " videoName, 3, 2
             }
             ClickWithDelayChange("Button5", "ahk_id " dialogId)
-            WinWait, ahk_class RecWindow ahk_pid %mmdPid%,, 5
+            WinWait, ahk_class RecWindow ahk_pid %mmdPid%,, 120
             if(ErrorLevel) {
                 success := false
                 TrayTip, % "Problem rendering", % "Rendering window for video " videoName " couldn't be found", 3, 3
@@ -787,7 +828,7 @@ PrepareRenderVRSide(mmdWin, videoName, viewpointModel, side, eye) {
 SetVRCameraParams(mmdWin, videoName, rotX, rotY, accRx, accRy, angle := 92) {
     success := true
     WinActivate, ahk_id %mmdWin%
-    WinWaitActive, ahk_id %mmdWin%,, 5
+    WinWaitActive, ahk_id %mmdWin%,, 120
     if(ErrorLevel) {
         success := false
         TrayTip % "Error", % "Problem setting camera parameters for " videoName, 3, 3
@@ -949,6 +990,77 @@ StartInjectMetadataTask(ByRef job, ByRef task, videoFile) {
     Return success
 }
 
+StartUploadingTask(ByRef job, ByRef task, videoFile) {
+    success := true
+    try {
+        scriptPid := 0
+        scriptWin := 0
+        taskStarted := -1
+
+        if (A_IsCompiled) {
+            ; For the compiled exe we can get the PID directly from the Run command
+            Run % A_WorkingDir . "\scripts\upload_video.exe """ videoFile """ " task.jobId " " task.taskId,,, scriptPid
+            WinWait, ahk_pid %scriptPid%,, 10
+            taskStarted := A_TickCount
+            WinGet, scriptWin, ID, ahk_pid %scriptPid%
+        } else {
+            toolsDir := A_WorkingDir
+            toolsDirClean := StrReplace(toolsDir, ":")
+            toolsDirBash := "/" . StrReplace(toolsDirClean, "\", "/")
+            pythonScript := toolsDirBash . "/scripts/python/upload_video.py"
+            Run % "C:\msys64\usr\bin\mintty.exe /bin/env MSYSTEM=MINGW64 /bin/bash -l """ toolsDirBash "/scripts/bash/python_launcher.sh"" " pythonScript " '" videoFile "' " task.jobId " " task.taskId 
+            ; When running the script in MinGW we need to lookup the cli window using a tag
+            exeLookup := "mintty.exe"
+            idSep := ":"
+            idTag := "[" . job.jobShortId . idSep . task.taskShortId . "]"
+            WinWait, %idTag% ahk_exe %exeLookup%,, 10
+            taskStarted := A_TickCount
+            WinGet, scriptPid, PID, %idTag% ahk_exe %exeLookup%
+            WinGet, scriptWin, ID, ahk_pid %scriptPid%
+        }
+
+        timeBeforeCheckHung := 10 * 60 * 1000 ; 10 minutes in millis
+        periodOfGrace := 5 * 60 * 1000 ; 5 minutes
+        hungStart := -1
+        ; Wait for the script to finish
+        oldStatus := task.taskStatus
+        while (oldStatus == task.taskStatus) {
+            taskEllapsed := A_TickCount - taskStarted
+            if (taskEllapsed > timeBeforeCheckHung && scriptWin) {
+                ; After 15 minutes start checking if the process froze
+                isHung := IsHungWindow(scriptWin)
+                if(IsHung == 0) {
+                    ; It has recovered within the period of grace. Keep it going
+                    hungStart := -1
+                }
+                if(hungStart != -1) {
+                    hungEllapsed := hungStart - A_TickCount
+                    if(hungEllapsed > periodOfGrace) {
+                        Process, Close, %scriptPid%
+                        MsgBox, 0x10, % "Error", % "The uploader script froze and had to be killed"
+                        ExitApp, 1
+                    }
+                } else {
+                    if(IsHung == 1) {
+                        hungStart := A_TickCount
+                    }
+                }
+            }
+            PullTaskStatus(task)
+            Sleep, 100
+        }
+
+        if(task.taskStatus == TaskData.STATUS_ERROR) {
+            success := false
+            TrayTip % "Error", % "Uploading task finished with errors", 2, 3
+        }
+
+    } catch {
+        success := false
+        TrayTip % "Error", % "Unknown error while uploading the video", 2, 3
+    }
+}
+
 CreateStagingDir(job, ByRef outFullpath) {
     success := true
     try {
@@ -1022,14 +1134,14 @@ ExtractResolution(mmdWin, ByRef width, ByRef height) {
         ; Just to be sure the WinMenuSelectItem works, activate the MMD window first
         ; this way we ensure it is in a "non-minimized" state. See: https://www.autohotkey.com/docs/commands/WinMenuSelectItem.htm
         WinActivate, ahk_id %mmdWin%
-        WinWaitActive, ahk_id %mmdWin%,, 5
+        WinWaitActive, ahk_id %mmdWin%,, 120
         if (ErrorLevel) {
             success := false
         }
 
         if(success) {
             Run % "notepad.exe data\placeholder.txt",,, txtPid
-            WinWait, ahk_pid %txtPid%,, 5
+            WinWait, ahk_pid %txtPid%,, 120
             if (ErrorLevel) {
                 success := false
             }
@@ -1037,14 +1149,14 @@ ExtractResolution(mmdWin, ByRef width, ByRef height) {
         
         if(success) {
             WinActivate, ahk_pid %txtPid%
-            WinWaitActive, ahk_pid %txtPid%,, 5
+            WinWaitActive, ahk_pid %txtPid%,, 120
             if (ErrorLevel) {
                 success := false
             }
         }
         if (success) {
             WinMenuSelectItem, ahk_id %mmdWin%,, view, screen size
-            WinWait, screen size ahk_pid %mmdPid%,, 5
+            WinWait, screen size ahk_pid %mmdPid%,, 120
             if (ErrorLevel) {
                 success := false
             }
@@ -1145,6 +1257,22 @@ DetermineVideoBaseName(mmdWin, ByRef pmmFullPath) {
         videoTitle := pmmFileName
     }
     Return videoTitle
+}
+
+CleanupStagingFiles(ByRef job, stagingFolder, fileType, eye) {
+    if (fileType == FILETYPE_FOLDER) {
+        ; Delete the entire staging folder
+        FileRemoveDir, %stagingFolder%, 1
+    } else if(fileType == FILETYPE_RENDER) {
+        renderSides := [VR_SIDE_LEFT, VR_SIDE_RIGHT, VR_SIDE_TOP, VR_SIDE_BOTTOM, VR_SIDE_FRONT]
+        for i, side in renderSides {
+            fileName := eye . side . "_" . job.baseVideoName . ".avi"
+            FileDelete, %stagingFolder%\%fileName%
+        }
+    } else if (fileType == FILETYPE_ENCODED) {
+        fileName := eye . "_encoded_" . job.baseVideoName . ".mp4"
+        FileDelete, %stagingFolder%\%fileName%
+    }
 }
 
 IsHungWindow(win) {

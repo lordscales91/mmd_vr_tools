@@ -78,6 +78,7 @@ def inject_metadata(infile: str, job_data:ConfigParser):
             with open(out_file, 'wb') as out_fh:
                 mpeg4_file.save(in_fh, out_fh)
                 print('Done!')
+                return out_file
     else:
         raise Exception("Input file not found")
 
@@ -218,7 +219,8 @@ def change_cli_title(new_title:str):
 
 def update_task_status(task_data, out_file, new_status=9, task_result=''):
     task_data.set('General', 'taskStatus', str(new_status))
-    task_data.set('General', 'taskResult', task_result)
+    if task_result is not None:
+        task_data.set('General', 'taskResult', task_result)
     with open(out_file, 'wt', encoding='utf-16') as fp:
         task_data.write(fp, False)
 
@@ -257,8 +259,8 @@ if getattr(sys, 'frozen', False) or __name__ == '__main__':
         cli_id_tag = "[{:s}{:s}{:s}]".format(job_short_id, id_sep, task_short_id)
         change_cli_title("Injecting metadata...")
         try:
-            inject_metadata(input_video, job_data)
-            update_task_status(task_data, task_file)
+            out_file = inject_metadata(input_video, job_data)
+            update_task_status(task_data, task_file, task_result=out_file)
         except Exception as e:
             print(type(e).__name__ + ': ' + str(e))
             update_task_status(task_data, task_file, -1, str(e))

@@ -1,5 +1,6 @@
 {
     "python.analysis.extraPaths": [
-        "./libs/libopenshot-windows/mingw64/lib/python3.8/site-packages"
+        "./libs/libopenshot-windows/mingw64/lib/python3.8/site-packages",
+        "./libs/extra/python"
     ]
 }

@@ -367,7 +367,8 @@ def get_safe_filename(directory, base_name, ext='.mp4'):
 
 def update_task_status(task_data, out_file, new_status=9, task_result=''):
     task_data.set('General', 'taskStatus', str(new_status))
-    task_data.set('General', 'taskResult', task_result)
+    if task_result is not None:
+        task_data.set('General', 'taskResult', task_result)
     with open(out_file, 'wt', encoding='utf-16') as fp:
         task_data.write(fp, False)
 
